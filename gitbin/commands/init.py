@@ -1,27 +1,61 @@
 #!/usr/bin/env python3
 """
 commands/init.py
-Implementa: gitbin init <arquivo.glb>
+Implementa: gitbin init <arquivo.glb> [--size <tamanho>]
 
-Cria a estrutura .gitbin no diretorio atual:
-  .gitbin/
-    - disco.img             imagem Btrfs de 10 GB
-    - mount/                ponto de montagem
-    -  -  versoes/atual/    subvolume ativo
-    -  -  snapshots/        versoes imutaveis
-    -config.json            metadados do repositorio
-    -estado.json            hashes da ultima versao salva
+Exemplos:
+  gitbin init modelo.glb
+  gitbin init modelo.glb --size 5G
+  gitbin init modelo.glb --size 500M
+
+Tamanho padrao: 5G
 """
 
 import os
 import subprocess
 import json
+import argparse
 
 from gitbin import repo
 from gitbin.glb import parse_glb, extrair_buffer_views, calcular_hashes
 
 
-def cmd_init(arquivo_glb):
+def parse_tamanho(tamanho_str):
+    """
+    Converte string de tamanho para numero de blocos de 1M para o dd.
+    Aceita formatos: 5G, 5g, 500M, 500m
+    Retorna: (count, unidade_legivel)
+    """
+    tamanho_str = tamanho_str.strip()
+    unidade = tamanho_str[-1].upper()
+    valor_str = tamanho_str[:-1]
+
+    try:
+        valor = float(valor_str)
+    except ValueError:
+        raise ValueError(
+            f"Tamanho invalido: '{tamanho_str}'. "
+            f"Use formato como '5G' ou '500M'."
+        )
+
+    if unidade == "G":
+        count = int(valor * 1024)
+        legivel = f"{valor:.0f}G"
+    elif unidade == "M":
+        count = int(valor)
+        legivel = f"{valor:.0f}M"
+    else:
+        raise ValueError(
+            f"Unidade desconhecida: '{unidade}'. Use 'G' para gigabytes ou 'M' para megabytes."
+        )
+
+    if count < 100:
+        raise ValueError("Tamanho minimo e 100M.")
+
+    return count, legivel
+
+
+def cmd_init(arquivo_glb, tamanho_str="5G"):
     arquivo_glb = os.path.abspath(arquivo_glb)
 
     if not os.path.isfile(arquivo_glb):
@@ -37,17 +71,24 @@ def cmd_init(arquivo_glb):
         print("Erro: repositorio gitbin ja existe neste diretorio.")
         raise SystemExit(1)
 
+    try:
+        count, legivel = parse_tamanho(tamanho_str)
+    except ValueError as e:
+        print(f"Erro: {e}")
+        raise SystemExit(1)
+
     print(f"Inicializando repositorio gitbin para: {os.path.basename(arquivo_glb)}")
+    print(f"Tamanho da imagem Btrfs: {legivel}")
 
     # Cria estrutura de diretorios
     md = repo.mount_dir()
     os.makedirs(md, exist_ok=True)
 
-    # Cria imagem Btrfs de 10 GB
+    # Cria imagem Btrfs
     disco = repo.disco_img()
-    print("Criando imagem Btrfs (10 GB)...")
+    print("Criando imagem Btrfs...")
     subprocess.run(
-        ["dd", "if=/dev/zero", f"of={disco}", "bs=1M", "count=10240"],
+        ["dd", "if=/dev/zero", f"of={disco}", "bs=1M", f"count={count}"],
         check=True, capture_output=True
     )
 
@@ -93,6 +134,7 @@ def cmd_init(arquivo_glb):
         "arquivo":       arquivo_glb,
         "versao_atual":  0,
         "total_versoes": 0,
+        "tamanho_disco": legivel,
     }
     repo.salvar_config(config)
 
