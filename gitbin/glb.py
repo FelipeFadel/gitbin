@@ -85,19 +85,50 @@ def reconstruir_glb(gltf_json, bin_data):
     return bytes(glb)
 
 
+def tamanho_buffer(gltf_json):
+    """
+    Tamanho real do chunk BIN em bytes.
+
+    Nao e a soma dos byteLength: bufferViews sao alinhados em 4 bytes,
+    entao existem lacunas de padding entre eles. Usa o byteLength
+    declarado em buffers[0]; se faltar, cai no maior byteOffset+byteLength.
+    """
+    buffers = gltf_json.get("buffers", [])
+    if buffers and "byteLength" in buffers[0]:
+        return buffers[0]["byteLength"]
+
+    buffer_views = gltf_json.get("bufferViews", [])
+    if not buffer_views:
+        return 0
+
+    return max(
+        bv.get("byteOffset", 0) + bv["byteLength"]
+        for bv in buffer_views
+    )
+
+
+def reconstruir_bin(gltf_json, segmentos):
+    """Remonta o chunk BIN colocando cada segmento no seu byteOffset."""
+    buffer_views = gltf_json.get("bufferViews", [])
+    novo_bin     = bytearray(tamanho_buffer(gltf_json))
+
+    for i, bv in enumerate(buffer_views):
+        offset = bv.get("byteOffset", 0)
+        length = bv["byteLength"]
+        if offset + length > len(novo_bin):
+            raise ValueError(
+                f"bufferView {i} (offset {offset}, len {length}) "
+                f"nao cabe no buffer de {len(novo_bin)} bytes."
+            )
+        novo_bin[offset: offset + length] = segmentos[i]
+
+    return bytes(novo_bin)
+
+
 def reconstruir_glb_de_segmentos(chunks, segmentos):
     """
     Reconstroi o BIN a partir dos segmentos extraidos e devolve o GLB completo.
     Util para restaurar uma versao a partir dos arquivos de bufferView.
     """
-    gltf_json    = chunks["json"]
-    buffer_views = gltf_json.get("bufferViews", [])
-
-    novo_bin = bytearray(len(chunks["bin"]))
-
-    for i, bv in enumerate(buffer_views):
-        offset = bv.get("byteOffset", 0)
-        length = bv["byteLength"]
-        novo_bin[offset: offset + length] = segmentos[i]
-
-    return reconstruir_glb(gltf_json, bytes(novo_bin))
+    gltf_json = chunks["json"]
+    return reconstruir_glb(gltf_json, reconstruir_bin(gltf_json, segmentos))

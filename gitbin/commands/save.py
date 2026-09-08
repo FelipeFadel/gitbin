@@ -9,6 +9,7 @@ cria um snapshot imutavel da versao atual.
 """
 
 import os
+import json
 import subprocess
 import time
 
@@ -58,6 +59,12 @@ def cmd_save():
         if idx_str not in hashes:
             removidos.append(idx_str)
 
+    # Grava o JSON desta versao junto dos segmentos.
+    # Sem isso o checkout precisaria ler a estrutura do arquivo que esta
+    # no disco agora, que pode ter outro layout de bufferViews.
+    with open(os.path.join(atual_dir, "gltf.json"), "w") as f:
+        json.dump(chunks["json"], f, separators=(",", ":"))
+
     # Grava apenas os segmentos novos ou modificados
     para_gravar = novos + modificados
     bytes_gravados = 0
@@ -87,7 +94,7 @@ def cmd_save():
     duracao = time.perf_counter() - inicio
 
     # Atualiza config e estado
-    config["versao_atual"]  += 1
+    config["versao_atual"]   = int(nome_versao[1:])
     config["total_versoes"] += 1
     repo.salvar_config(config)
     repo.salvar_estado(hashes)

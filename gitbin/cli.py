@@ -33,7 +33,7 @@ def main():
             tamanho = sys.argv[idx + 1]
 
         from gitbin.commands.init import cmd_init
-        cmd_init(sys.argv[2], tamanho)
+        cmd_init(sys.argv[2], tamanho)  
 
     elif comando == "save":
         from gitbin.commands.save import cmd_save

@@ -77,8 +77,23 @@ def salvar_estado(estado):
 
 
 def proxima_versao(config):
-    """Retorna o numero da proxima versao como string formatada (ex: v0004)."""
-    return f"v{config['versao_atual'] + 1:04d}"
+    """
+    Retorna o nome da proxima versao livre (ex: v0004).
+
+    Usa o maior snapshot ja existente como base, e nao apenas
+    config['versao_atual']: depois de um checkout para uma versao antiga,
+    versao_atual volta a apontar para tras e um save reutilizaria um nome
+    de snapshot que ja existe.
+    """
+    maior = config.get("versao_atual", 0)
+
+    for snap in listar_snapshots():
+        try:
+            maior = max(maior, int(snap[1:]))
+        except ValueError:
+            continue
+
+    return f"v{maior + 1:04d}"
 
 
 def snapshot_path(versao_str):
