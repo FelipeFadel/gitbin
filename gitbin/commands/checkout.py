@@ -31,6 +31,7 @@ def _copiar(src, dest):
 
 def cmd_checkout(versao_str):
     repo.assert_repo()
+    repo.garantir_montado()
     config = repo.ler_config()
 
     # Normaliza o nome da versao (aceita "3", "v3" e "v0003")

@@ -7,13 +7,15 @@ Lista todos os snapshots salvos com informacoes basicas.
 """
 
 import os
-import subprocess
+import json
 
 from gitbin import repo
+from datetime import datetime
 
 
 def cmd_log():
     repo.assert_repo()
+    repo.garantir_montado()
     config    = repo.ler_config()
     snapshots = repo.listar_snapshots()
 
@@ -29,18 +31,21 @@ def cmd_log():
     for snap in reversed(snapshots):
         snap_path = repo.snapshot_path(snap)
 
-        # Tamanho do snapshot via du
-        resultado = subprocess.run(
-            ["sudo", "btrfs", "subvolume", "show", snap_path],
-            capture_output=True, text=True
-        )
+        # Data gravada pelo save. Snapshots antigos nao tem meta.json:
+        # usa o mtime da pasta, que fica proximo da hora do save.
+        meta_path = os.path.join(snap_path, "meta.json")
+        if os.path.isfile(meta_path):
+            with open(meta_path, "r") as f:
+                data = json.load(f).get("data", "")
+        else:
+            # O gltf.json e reescrito em todo save; a pasta so muda de
+            # mtime quando arquivos sao criados ou apagados.
+            ref = os.path.join(snap_path, "gltf.json")
+            if not os.path.isfile(ref):
+                ref = snap_path
+            mtime = os.stat(ref).st_mtime
+            data = "~" + datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
 
-        # Data de criacao a partir dos metadados do subvolume
-        data = ""
-        for linha in resultado.stdout.splitlines():
-            if "Creation time" in linha:
-                data = linha.split(":", 1)[1].strip()
-                break
 
         marcador = " <- atual" if snap == versao_atual else ""
         print(f"  {snap}{marcador}")

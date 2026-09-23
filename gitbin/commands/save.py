@@ -15,10 +15,12 @@ import time
 
 from gitbin import repo
 from gitbin.glb import parse_glb, extrair_buffer_views, calcular_hashes
+from datetime import datetime
 
 
 def cmd_save():
     repo.assert_repo()
+    repo.garantir_montado()
     config = repo.ler_config()
     estado_anterior = repo.ler_estado()
 
@@ -83,10 +85,20 @@ def cmd_save():
         if os.path.exists(path):
             os.remove(path)
 
+    # Metadados da versao, lidos pelo log sem precisar de root
+    meta = {
+        "versao":  nome_versao,
+        "data":    datetime.now().isoformat(sep=" ", timespec="seconds"),
+        "arquivo": os.path.basename(arquivo_glb),
+        "gravados_bytes": bytes_gravados,
+    }
+    with open(os.path.join(atual_dir, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+
     # Cria snapshot imutavel
     snap_path = repo.snapshot_path(nome_versao)
     subprocess.run(
-        ["sudo", "btrfs", "subvolume", "snapshot", "-r",
+        ["btrfs", "subvolume", "snapshot", "-r",
          atual_dir, snap_path],
         check=True, capture_output=True
     )
