@@ -80,20 +80,22 @@ DIMENSOES = {
 def impressao_digital(me, sem_posicao=False):
     """
     Hash de toda a geometria da malha (posicoes, topologia, UV, normais,
-    materiais por face, shape keys). Selecao e visibilidade ficam de fora:
-    entrar e sair do modo de edicao nao conta como alteracao.
+    materiais por face, shape keys). Selecao e visibilidade ficam de fora,
+    e um atributo todo em zero conta como ausente: ao entrar e sair do modo
+    de edicao o Blender cria .uv_select_* e apaga material_index e
+    sharp_edge quando estao no valor padrao, sem mudar a geometria.
     Com sem_posicao=True ignora as coordenadas: se so ela mudar, a malha
     teve apenas vertices movidos.
     """
     h = hashlib.sha256()
     for a in sorted(me.attributes, key=lambda a: a.name):
-        if a.name.startswith((".select", ".hide")):
+        if a.name.startswith((".select", ".hide", ".uv_select")):
             continue
         if sem_posicao and a.name == "position":
             continue
         n = DIMENSOES.get(a.data_type)
-        h.update(f"{a.name}:{a.domain}:{a.data_type}".encode())
         if n is None:
+            h.update(f"{a.name}:{a.domain}:{a.data_type}".encode())
             continue
         if a.data_type in ("FLOAT2", "FLOAT_VECTOR"):
             chave = "vector"
@@ -109,6 +111,9 @@ def impressao_digital(me, sem_posicao=False):
             tipo = np.int32
         arr = np.empty(len(a.data) * n, dtype=tipo)
         a.data.foreach_get(chave, arr)
+        if not arr.any():
+            continue
+        h.update(f"{a.name}:{a.domain}:{a.data_type}".encode())
         h.update(arr.tobytes())
 
     inicio = np.empty(len(me.polygons), dtype=np.int32)
