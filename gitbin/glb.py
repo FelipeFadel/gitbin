@@ -7,6 +7,7 @@ Leitura, segmentacao e reconstrucao de arquivos GLB.
 import struct
 import json
 import hashlib
+import copy
 
 
 def parse_glb(filepath):
@@ -164,3 +165,133 @@ def reconstruir_glb_de_segmentos(chunks, segmentos):
     """
     gltf_json = chunks["json"]
     return reconstruir_glb(gltf_json, reconstruir_bin(gltf_json, segmentos))
+
+def _remapear(j, campo_acc, campo_bv):
+    """Aplica os mapas de accessors e bufferViews a todas as referencias do JSON."""
+    for m in j.get("meshes", []):
+        for p in m["primitives"]:
+            p["attributes"] = {k: campo_acc[v] for k, v in p["attributes"].items()}
+            if "indices" in p:
+                p["indices"] = campo_acc[p["indices"]]
+            if "targets" in p:
+                p["targets"] = [{k: campo_acc[v] for k, v in t.items()} for t in p["targets"]]
+    for s in j.get("skins", []):
+        if "inverseBindMatrices" in s:
+            s["inverseBindMatrices"] = campo_acc[s["inverseBindMatrices"]]
+    for a in j.get("animations", []):
+        for s in a["samplers"]:
+            s["input"], s["output"] = campo_acc[s["input"]], campo_acc[s["output"]]
+    for a in j.get("accessors", []):
+        if "bufferView" in a:
+            a["bufferView"] = campo_bv[a["bufferView"]]
+        for parte in ("indices", "values"):
+            if "sparse" in a:
+                a["sparse"][parte]["bufferView"] = campo_bv[a["sparse"][parte]["bufferView"]]
+    for img in j.get("images", []):
+        if "bufferView" in img:
+            img["bufferView"] = campo_bv[img["bufferView"]]
+
+
+def _accessors_usados(j):
+    usados = []
+    for m in j.get("meshes", []):
+        for p in m["primitives"]:
+            usados += p["attributes"].values()
+            usados += [p["indices"]] if "indices" in p else []
+            for t in p.get("targets", []):
+                usados += t.values()
+    usados += [s["inverseBindMatrices"] for s in j.get("skins", []) if "inverseBindMatrices" in s]
+    for a in j.get("animations", []):
+        for s in a["samplers"]:
+            usados += [s["input"], s["output"]]
+    return set(usados)
+
+
+def mesclar(base, novo, preservar):
+    """
+    Monta um GLB a partir de `novo` (export do Blender) reaproveitando, para as
+    malhas que nao mudaram, os accessors e os bytes originais de `base`.
+
+    base, novo: dicts de parse_glb(). preservar: {malha_novo: malha_base}.
+    Nos, materiais, imagens e malhas editadas vem do novo; a geometria das
+    malhas preservadas vem byte a byte da base, entao as bufferViews delas
+    tem o mesmo hash da versao anterior e nao sao gravadas de novo.
+
+    Retorna (gltf_json, bin_data).
+    """
+    j  = copy.deepcopy(novo["json"])
+    bj = base["json"]
+    seg_novo, seg_base = extrair_buffer_views(novo), extrair_buffer_views(base)
+
+    bvs  = [(dict(bv), seg_novo[i]) for i, bv in enumerate(j.get("bufferViews", []))]
+    accs = j.setdefault("accessors", [])
+    mapa_bv, mapa_acc = {}, {}
+
+    def trazer_bv(bi):
+        if bi not in mapa_bv:
+            bvs.append((dict(bj["bufferViews"][bi]), seg_base[bi]))
+            mapa_bv[bi] = len(bvs) - 1
+        return mapa_bv[bi]
+
+    def trazer_acc(ai):
+        if ai not in mapa_acc:
+            a = copy.deepcopy(bj["accessors"][ai])
+            if "bufferView" in a:
+                a["bufferView"] = trazer_bv(a["bufferView"])
+            for parte in ("indices", "values"):
+                if "sparse" in a:
+                    a["sparse"][parte]["bufferView"] = trazer_bv(a["sparse"][parte]["bufferView"])
+            accs.append(a)
+            mapa_acc[ai] = len(accs) - 1
+        return mapa_acc[ai]
+
+    for ni, bi in preservar.items():
+        pn, pb = j["meshes"][int(ni)]["primitives"], bj["meshes"][int(bi)]["primitives"]
+        if len(pn) != len(pb):
+            raise ValueError(f"malha {ni} tem {len(pn)} primitivas e a base {bi} tem {len(pb)}")
+        for p, q in zip(pn, pb):
+            p["attributes"] = {k: trazer_acc(v) for k, v in q["attributes"].items()}
+            for chave in ("indices", "mode"):
+                p.pop(chave, None)
+                if chave in q:
+                    p[chave] = trazer_acc(q[chave]) if chave == "indices" else q[chave]
+            p.pop("targets", None)
+            if "targets" in q:
+                p["targets"] = [{k: trazer_acc(v) for k, v in t.items()} for t in q["targets"]]
+
+    # Descarta accessors e bufferViews que ficaram sem uso (os do export
+    # que foram substituidos) e compacta os indices.
+    usados_acc = sorted(_accessors_usados(j))
+    campo_acc  = {a: k for k, a in enumerate(usados_acc)}
+    j["accessors"] = [accs[a] for a in usados_acc]
+    usados_bv = set()
+    for a in j["accessors"]:
+        usados_bv.add(a.get("bufferView"))
+        if "sparse" in a:
+            usados_bv |= {a["sparse"]["indices"]["bufferView"], a["sparse"]["values"]["bufferView"]}
+    usados_bv |= {img["bufferView"] for img in j.get("images", []) if "bufferView" in img}
+    usados_bv.discard(None)
+    usados_bv = sorted(usados_bv)
+    campo_bv  = {b: k for k, b in enumerate(usados_bv)}
+    _remapear(j, campo_acc, campo_bv)
+
+    # Remonta o BIN com cada bufferView alinhada em 4 bytes
+    novo_bin, novas_bvs = bytearray(), []
+    for b in usados_bv:
+        bv, dados = bvs[b]
+        novo_bin += b"\x00" * (-len(novo_bin) % 4)
+        bv.update(buffer=0, byteOffset=len(novo_bin), byteLength=len(dados))
+        novas_bvs.append(bv)
+        novo_bin += dados
+    j["bufferViews"] = novas_bvs
+    j["buffers"] = [{"byteLength": len(novo_bin)}]
+
+    # As marcas do addon so servem para a mescla; nao vao para o arquivo
+    for m in j.get("meshes", []):
+        extras = m.get("extras", {})
+        for k in [k for k in extras if k.startswith("gitbin_")]:
+            del extras[k]
+        if "extras" in m and not extras:
+            del m["extras"]
+
+    return j, bytes(novo_bin)

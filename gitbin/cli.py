@@ -6,6 +6,8 @@ Comandos:
   gitbin status               Mostra o que mudou desde o ultimo save
   gitbin log                  Lista o historico de versoes salvas
   gitbin checkout <versao>    Restaura uma versao anterior como estado atual
+  gitbin mesclar <novo.glb> <base.glb> <preservar.json> <saida.glb>
+                              Reaproveita a geometria inalterada da base (addon)
 """
 
 import sys
@@ -54,6 +56,13 @@ def main():
             sys.exit(1)
         from gitbin.commands.checkout import cmd_checkout
         cmd_checkout(sys.argv[2])
+
+    elif comando == "mesclar":
+        if len(sys.argv) < 6:
+            print("Uso: gitbin mesclar <novo.glb> <base.glb> <preservar.json> <saida.glb>")
+            sys.exit(1)
+        from gitbin.commands.mesclar import cmd_mesclar
+        cmd_mesclar(*sys.argv[2:6])
 
     else:
         print(f"Comando desconhecido: {comando}")
