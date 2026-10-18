@@ -10,7 +10,8 @@ sem gravar nada em disco.
 import os
 
 from gitbin import repo
-from gitbin.glb import parse_glb, extrair_buffer_views, calcular_hashes
+from gitbin.glb import (parse_glb, extrair_buffer_views, calcular_hashes,
+                        classificar)
 
 
 def cmd_status():
@@ -32,29 +33,15 @@ def cmd_status():
     segmentos = extrair_buffer_views(chunks)
     hashes    = calcular_hashes(segmentos)
 
-    novos       = []
-    modificados = []
-    removidos   = []
-    inalterados = []
-
-    for idx_str, hash_atual in hashes.items():
-        if idx_str not in estado_anterior:
-            novos.append(idx_str)
-        elif estado_anterior[idx_str] != hash_atual:
-            modificados.append(idx_str)
-        else:
-            inalterados.append(idx_str)
-
-    for idx_str in estado_anterior:
-        if idx_str not in hashes:
-            removidos.append(idx_str)
+    novos, modificados, reaproveitados, removidos, inalterados = \
+        classificar(estado_anterior, hashes)
 
     versao_atual = f"v{config['versao_atual']:04d}"
     print(f"\nArquivo: {os.path.basename(arquivo_glb)}")
     print(f"Versao atual: {versao_atual}")
     print()
 
-    if not novos and not modificados and not removidos:
+    if not novos and not modificados and not removidos and not reaproveitados:
         print("Nenhuma alteracao desde o ultimo save.")
         return
 
@@ -80,6 +67,11 @@ def cmd_status():
         print(f"\nRemovidas ({len(removidos)}):")
         for idx_str in sorted(removidos, key=int):
             print(f"  bufferView_{int(idx_str):04d}")
+
+    if reaproveitados:
+        print(f"\nReaproveitadas ({len(reaproveitados)}, mesmo conteudo em outro indice):")
+        for idx_str in sorted(reaproveitados, key=int):
+            print(f"  bufferView_{int(idx_str):04d} <- bufferView_{int(reaproveitados[idx_str]):04d}")
 
     print(f"\nInalteradas: {len(inalterados)} bufferViews")
     print(f"A gravar:    {bytes_pendentes / 1024 / 1024:.2f} MB")

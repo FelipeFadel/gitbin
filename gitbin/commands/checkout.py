@@ -10,23 +10,9 @@ Todos os snapshots sao preservados.
 
 import os
 import json
-import subprocess
 
 from gitbin import repo
 from gitbin.glb import reconstruir_glb, reconstruir_bin, calcular_hashes
-
-
-def _copiar(src, dest):
-    """Copia preservando reflink no Btrfs (nao duplica os extents)."""
-    resultado = subprocess.run(
-        ["cp", "--reflink=auto", src, dest],
-        capture_output=True, text=True
-    )
-    if resultado.returncode != 0:
-        with open(src, "rb") as f:
-            dados = f.read()
-        with open(dest, "wb") as f:
-            f.write(dados)
 
 
 def cmd_checkout(versao_str):
@@ -99,11 +85,11 @@ def cmd_checkout(versao_str):
             os.remove(os.path.join(atual_dir, arquivo))
 
     for i in segmentos:
-        _copiar(
+        repo.copiar_reflink(
             os.path.join(snap_path, f"bufferView_{i:04d}.bin"),
             os.path.join(atual_dir, f"bufferView_{i:04d}.bin"),
         )
-    _copiar(json_path, os.path.join(atual_dir, "gltf.json"))
+    repo.copiar_reflink(json_path, os.path.join(atual_dir, "gltf.json"))
 
     # Atualiza o estado para refletir a versao restaurada
     repo.salvar_estado(calcular_hashes(segmentos))

@@ -112,6 +112,19 @@ def listar_snapshots():
         if os.path.isdir(os.path.join(sd, d)) and d.startswith("v")
     ])
 
+def copiar_reflink(src, dest):
+    """Copia preservando reflink no Btrfs (nao duplica os extents)."""
+    resultado = subprocess.run(
+        ["cp", "--reflink=auto", src, dest],
+        capture_output=True, text=True
+    )
+    if resultado.returncode != 0:
+        with open(src, "rb") as f:
+            dados = f.read()
+        with open(dest, "wb") as f:
+            f.write(dados)
+
+
 def _rodar(cmd):
     """roda um comando e devolve o stdout, ou "" se ele falhar."""
     resultado = subprocess.run(cmd, capture_output=True, text=True)

@@ -60,6 +60,38 @@ def calcular_hashes(segmentos):
     }
 
 
+def classificar(estado_anterior, hashes):
+    """
+    Compara os hashes da versao nova com os da anterior, por conteudo.
+
+    Uma bufferView cujo hash ja existia na versao anterior, mesmo em outro
+    indice, e "reaproveitada": seus bytes ja estao no disco. Isso torna o
+    diff imune a reordenacao e a mudanca na quantidade de bufferViews.
+
+    Retorna (novos, modificados, reaproveitados, removidos, inalterados);
+    reaproveitados e dict indice_novo -> indice_antigo, os demais sao listas.
+    """
+    por_hash = {h: i for i, h in estado_anterior.items()}
+    novos, modificados, removidos, inalterados = [], [], [], []
+    reaproveitados = {}
+
+    for idx_str, hash_atual in hashes.items():
+        if estado_anterior.get(idx_str) == hash_atual:
+            inalterados.append(idx_str)
+        elif hash_atual in por_hash:
+            reaproveitados[idx_str] = por_hash[hash_atual]
+        elif idx_str in estado_anterior:
+            modificados.append(idx_str)
+        else:
+            novos.append(idx_str)
+
+    for idx_str in estado_anterior:
+        if idx_str not in hashes:
+            removidos.append(idx_str)
+
+    return novos, modificados, reaproveitados, removidos, inalterados
+
+
 def reconstruir_glb(gltf_json, bin_data):
     """Reconstroi um arquivo GLB a partir do JSON e do BIN."""
     json_bytes = json.dumps(

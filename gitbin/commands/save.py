@@ -14,7 +14,8 @@ import subprocess
 import time
 
 from gitbin import repo
-from gitbin.glb import parse_glb, extrair_buffer_views, calcular_hashes
+from gitbin.glb import (parse_glb, extrair_buffer_views, calcular_hashes,
+                        classificar)
 from datetime import datetime
 
 
@@ -43,23 +44,9 @@ def cmd_save():
 
     atual_dir = repo.atual_dir()
 
-    # Deteccao diferencial
-    novos       = []
-    modificados = []
-    removidos   = []
-    inalterados = []
-
-    for idx_str, hash_atual in hashes.items():
-        if idx_str not in estado_anterior:
-            novos.append(idx_str)
-        elif estado_anterior[idx_str] != hash_atual:
-            modificados.append(idx_str)
-        else:
-            inalterados.append(idx_str)
-
-    for idx_str in estado_anterior:
-        if idx_str not in hashes:
-            removidos.append(idx_str)
+    # Deteccao diferencial por conteudo
+    novos, modificados, reaproveitados, removidos, inalterados = \
+        classificar(estado_anterior, hashes)
 
     # Grava o JSON desta versao junto dos segmentos.
     # Sem isso o checkout precisaria ler a estrutura do arquivo que esta
@@ -71,12 +58,28 @@ def cmd_save():
     para_gravar = novos + modificados
     bytes_gravados = 0
 
+    gravados_nesta = {}  # hash -> caminho, para conteudo repetido na mesma versao
+
     for idx_str in para_gravar:
         idx  = int(idx_str)
         path = os.path.join(atual_dir, f"bufferView_{idx:04d}.bin")
+        if hashes[idx_str] in gravados_nesta:
+            repo.copiar_reflink(gravados_nesta[hashes[idx_str]], path)
+            continue
         with open(path, "wb") as f:
             f.write(segmentos[idx])
+        gravados_nesta[hashes[idx_str]] = path
         bytes_gravados += len(segmentos[idx])
+
+    # Conteudo que ja existia em outro indice: clona do snapshot da versao
+    # base. O snapshot e somente leitura, entao a ordem das copias nao importa,
+    # e o reflink compartilha os extents em vez de gravar os bytes de novo.
+    base_snap = repo.snapshot_path(f"v{config['versao_atual']:04d}")
+    for idx_str, idx_antigo in reaproveitados.items():
+        repo.copiar_reflink(
+            os.path.join(base_snap, f"bufferView_{int(idx_antigo):04d}.bin"),
+            os.path.join(atual_dir, f"bufferView_{int(idx_str):04d}.bin"),
+        )
 
     # Remove segmentos que deixaram de existir
     for idx_str in removidos:
@@ -118,6 +121,7 @@ def cmd_save():
     print(f"\nVersao {nome_versao} salva.")
     print(f"  Novas:       {len(novos):>4} bufferViews")
     print(f"  Modificadas: {len(modificados):>4} bufferViews")
+    print(f"  Reaproveit.: {len(reaproveitados):>4} bufferViews (reflink)")
     print(f"  Removidas:   {len(removidos):>4} bufferViews")
     print(f"  Inalteradas: {len(inalterados):>4} bufferViews")
     print(f"  Gravados:    {bytes_gravados / 1024 / 1024:.2f} MB")
