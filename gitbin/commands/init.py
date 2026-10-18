@@ -15,6 +15,7 @@ import os
 import subprocess
 import json
 import argparse
+import tempfile
 
 from gitbin import repo
 from gitbin.glb import parse_glb, extrair_buffer_views, calcular_hashes
@@ -84,50 +85,28 @@ def cmd_init(arquivo_glb, tamanho_str="5G"):
     md = repo.mount_dir()
     os.makedirs(md, exist_ok=True)
 
-    # Cria imagem Btrfs
+    # Cria imagem Btrfs esparsa: so ocupa no disco o que for gravado
     disco = repo.disco_img()
     print("Criando imagem Btrfs...")
-    subprocess.run(
-        ["dd", "if=/dev/zero", f"of={disco}", "bs=1M", f"count={count}"],
-        check=True, capture_output=True
-    )
+    with open(disco, "wb") as f:
+        f.truncate(count * 1024 * 1024)
 
-    # Formata como Btrfs
-    subprocess.run(
-        ["mkfs.btrfs", disco],
-        check=True, capture_output=True
-    )
+    # Formata ja com os subvolumes e o diretorio de snapshots.
+    # --rootdir copia a arvore com o dono atual, entao nao precisa de sudo
+    # para criar subvolumes nem para dar chown depois.
+    with tempfile.TemporaryDirectory() as raiz:
+        os.makedirs(os.path.join(raiz, repo.ATUAL_DIR))
+        os.makedirs(os.path.join(raiz, repo.SNAPS_DIR))
+        subprocess.run(
+            ["mkfs.btrfs", "-q", "-r", raiz,
+             "-u", f"rw:{repo.VERSOES_DIR}",
+             "-u", f"rw:{repo.ATUAL_DIR}",
+             disco],
+            check=True, capture_output=True
+        )
 
-    # Monta via loopback
-    subprocess.run(
-        ["sudo", "mount", "-o", "loop", disco, md],
-        check=True
-    )
-
-    # Cria subvolumes
-    subprocess.run(
-        ["sudo", "btrfs", "subvolume", "create",
-         os.path.join(md, repo.VERSOES_DIR)],
-        check=True, capture_output=True
-    )
-    subprocess.run(
-        ["sudo", "btrfs", "subvolume", "create",
-         os.path.join(md, repo.ATUAL_DIR)],
-        check=True, capture_output=True
-    )
-
-    # Cria diretorio de snapshots
-    subprocess.run(
-        ["sudo", "mkdir", "-p", os.path.join(md, repo.SNAPS_DIR)],
-        check=True
-    )
-
-    # Ajusta permissoes para o usuario atual
-    usuario = os.environ.get("USER", "ubuntu")
-    subprocess.run(
-        ["sudo", "chown", "-R", f"{usuario}:{usuario}", md],
-        check=True
-    )
+    # Monta via udisks (loop + mount sem root)
+    repo.garantir_montado()
 
     # Salva config
     config = {
