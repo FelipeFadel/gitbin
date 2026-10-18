@@ -51,8 +51,15 @@ def cmd_save():
     # Grava o JSON desta versao junto dos segmentos.
     # Sem isso o checkout precisaria ler a estrutura do arquivo que esta
     # no disco agora, que pode ter outro layout de bufferViews.
-    with open(os.path.join(atual_dir, "gltf.json"), "w") as f:
-        json.dump(chunks["json"], f, separators=(",", ":"))
+    # Grava por blocos: o JSON muda pouco entre versoes (um material, um no),
+    # e os blocos iguais continuam compartilhados com o snapshot anterior.
+    json_path  = os.path.join(atual_dir, "gltf.json")
+    json_bytes = json.dumps(chunks["json"], separators=(",", ":")).encode("utf-8")
+    if os.path.isfile(json_path):
+        repo.gravar_blocos(json_path, json_bytes)
+    else:
+        with open(json_path, "wb") as f:
+            f.write(json_bytes)
 
     # Grava apenas os segmentos novos ou modificados
     para_gravar = novos + modificados

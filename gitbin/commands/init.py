@@ -97,8 +97,11 @@ def cmd_init(arquivo_glb, tamanho_str="5G"):
     with tempfile.TemporaryDirectory() as raiz:
         os.makedirs(os.path.join(raiz, repo.ATUAL_DIR))
         os.makedirs(os.path.join(raiz, repo.SNAPS_DIR))
+        # Nodesize de 4 KiB (padrao 16 KiB): cada snapshot e cada arquivo
+        # alterado copiam (CoW) nos menores da arvore de metadados; com nos
+        # menores o custo fixo por versao cai de ~96 KB para ~24 KB.
         subprocess.run(
-            ["mkfs.btrfs", "-q", "-r", raiz,
+            ["mkfs.btrfs", "-q", "-n", "4096", "-r", raiz,
              "-u", f"rw:{repo.VERSOES_DIR}",
              "-u", f"rw:{repo.ATUAL_DIR}",
              disco],

@@ -331,12 +331,16 @@ def mesclar(base, novo, preservar):
     j["bufferViews"] = novas_bvs
     j["buffers"] = [{"byteLength": len(novo_bin)}]
 
-    # As marcas do addon so servem para a mescla; nao vao para o arquivo
-    for m in j.get("meshes", []):
-        extras = m.get("extras", {})
-        for k in [k for k in extras if k.startswith("gitbin_")]:
-            del extras[k]
-        if "extras" in m and not extras:
-            del m["extras"]
+    # As marcas do addon (malhas) e as propriedades do painel (cena, com o
+    # caminho local do arquivo) so servem dentro do Blender; nao vao para o GLB.
+    for lista in j.values():
+        for item in lista if isinstance(lista, list) else []:
+            extras = item.get("extras") if isinstance(item, dict) else None
+            if not isinstance(extras, dict):
+                continue
+            for k in [k for k in extras if k.startswith("gitbin")]:
+                del extras[k]
+            if not extras:
+                del item["extras"]
 
     return j, bytes(novo_bin)
