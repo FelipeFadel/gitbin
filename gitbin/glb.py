@@ -8,6 +8,7 @@ import struct
 import json
 import hashlib
 import copy
+import array
 
 
 def parse_glb(filepath):
@@ -212,7 +213,10 @@ def mesclar(base, novo, preservar):
     Monta um GLB a partir de `novo` (export do Blender) reaproveitando, para as
     malhas que nao mudaram, os accessors e os bytes originais de `base`.
 
-    base, novo: dicts de parse_glb(). preservar: {malha_novo: malha_base}.
+    base, novo: dicts de parse_glb(). preservar: {malha_novo: malha_base} ou
+    {malha_novo: {"base": malha_base, "substituir": {"POSITION": "arq.bin"}}}:
+    neste caso os atributos listados recebem os bytes do arquivo (float32,
+    na mesma ordem de vertices da base) e os demais continuam os da base.
     Nos, materiais, imagens e malhas editadas vem do novo; a geometria das
     malhas preservadas vem byte a byte da base, entao as bufferViews delas
     tem o mesmo hash da versao anterior e nao sao gravadas de novo.
@@ -258,12 +262,40 @@ def mesclar(base, novo, preservar):
             mapa_acc[ai] = len(accs) - 1
         return mapa_acc[ai]
 
-    for ni, bi in preservar.items():
+    def substituir_acc(ai, arquivo):
+        """Accessor da base com dados novos; ocupa o indice da bufferView antiga."""
+        a = copy.deepcopy(bj["accessors"][ai])
+        with open(arquivo, "rb") as f:
+            dados = f.read()
+        n = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[a["type"]]
+        if a.get("componentType") != 5126 or len(dados) != 4 * n * a["count"]:
+            raise ValueError(f"substituicao de {arquivo} nao bate com o accessor {ai}")
+        bv_base = bj["bufferViews"][a["bufferView"]]
+        bv = {k: v for k, v in bv_base.items() if k == "target"}
+        if "byteStride" in bv_base:
+            bv["byteStride"] = 4 * n
+        bvs.append((bv, dados))
+        origem[len(bvs) - 1] = a["bufferView"]
+        a["bufferView"] = len(bvs) - 1
+        a.pop("byteOffset", None)
+        if "min" in a or "max" in a:
+            v = array.array("f")
+            v.frombytes(dados)
+            a["min"] = [min(v[c::n]) for c in range(n)]
+            a["max"] = [max(v[c::n]) for c in range(n)]
+        accs.append(a)
+        return len(accs) - 1
+
+    for ni, alvo in preservar.items():
+        bi, subst = (alvo["base"], alvo.get("substituir", {})) if isinstance(alvo, dict) else (alvo, {})
         pn, pb = j["meshes"][int(ni)]["primitives"], bj["meshes"][int(bi)]["primitives"]
         if len(pn) != len(pb):
             raise ValueError(f"malha {ni} tem {len(pn)} primitivas e a base {bi} tem {len(pb)}")
         for p, q in zip(pn, pb):
-            p["attributes"] = {k: trazer_acc(v) for k, v in q["attributes"].items()}
+            p["attributes"] = {
+                k: substituir_acc(v, subst[k]) if k in subst else trazer_acc(v)
+                for k, v in q["attributes"].items()
+            }
             for chave in ("indices", "mode"):
                 p.pop(chave, None)
                 if chave in q:

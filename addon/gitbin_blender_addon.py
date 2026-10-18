@@ -77,15 +77,19 @@ DIMENSOES = {
 }
 
 
-def impressao_digital(me):
+def impressao_digital(me, sem_posicao=False):
     """
     Hash de toda a geometria da malha (posicoes, topologia, UV, normais,
     materiais por face, shape keys). Selecao e visibilidade ficam de fora:
     entrar e sair do modo de edicao nao conta como alteracao.
+    Com sem_posicao=True ignora as coordenadas: se so ela mudar, a malha
+    teve apenas vertices movidos.
     """
     h = hashlib.sha256()
     for a in sorted(me.attributes, key=lambda a: a.name):
         if a.name.startswith((".select", ".hide")):
+            continue
+        if sem_posicao and a.name == "position":
             continue
         n = DIMENSOES.get(a.data_type)
         h.update(f"{a.name}:{a.domain}:{a.data_type}".encode())
@@ -151,13 +155,97 @@ def limpar_cena():
     bpy.data.orphans_purge(do_recursive=True)
 
 
-def marcar_malhas(meshes_gltf):
-    """Guarda em cada malha do Blender o indice glTF e a impressao digital."""
+def marcar(me, j, em_ordem):
+    """
+    Guarda na malha o indice glTF, as impressoes digitais e se os vertices do
+    Blender estao na mesma ordem dos da malha glTF (verdade apos o import e
+    enquanto a geometria vier da base; falso se o exportador a reconstruiu).
+    """
+    me["gitbin_mesh"] = j
+    me["gitbin_fp"] = impressao_digital(me)
+    me["gitbin_fp_topo"] = impressao_digital(me, sem_posicao=True)
+    me["gitbin_ordem"] = em_ordem
+
+
+def marcar_malhas(meshes_gltf, em_ordem):
+    """Remarca as malhas pela ordem do GLB salvo. em_ordem: indices preservados."""
     for j, m in enumerate(meshes_gltf):
         me = bpy.data.meshes.get(m.get("name", ""))
         if me is not None:
-            me["gitbin_mesh"] = j
-            me["gitbin_fp"] = impressao_digital(me)
+            marcar(me, j, j in em_ordem)
+
+
+def ler_accessor(gltf, bin_chunk, ai):
+    """Le um accessor float da base como array numpy (contagem, componentes)."""
+    a = gltf["accessors"][ai]
+    bv = gltf["bufferViews"][a["bufferView"]]
+    n = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[a["type"]]
+    passo = bv.get("byteStride", 4 * n)
+    ini = bv.get("byteOffset", 0) + a.get("byteOffset", 0)
+    bruto = np.frombuffer(bin_chunk, dtype=np.uint8, count=passo * a["count"], offset=ini)
+    return bruto.reshape(a["count"], passo)[:, :4 * n].copy().view(np.float32).reshape(a["count"], n)
+
+
+def zup_para_yup(v):
+    """Eixos do Blender para os do glTF: (x, y, z) -> (x, z, -y), como o exportador."""
+    return np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1)
+
+
+def por_canto(me, colecao, campo, n):
+    """Le um campo por canto (loop) e devolve o valor do primeiro canto de cada vertice."""
+    canto_vert = np.empty(len(me.loops), dtype=np.int32)
+    me.loops.foreach_get("vertex_index", canto_vert)
+    _, primeiro = np.unique(canto_vert, return_index=True)
+    valores = np.empty(len(me.loops) * n, dtype=np.float32)
+    colecao.foreach_get(campo, valores)
+    return valores.reshape(len(me.loops), n)[primeiro] if n > 1 else valores[primeiro]
+
+
+# Diferenca de normal abaixo disso e arredondamento do proprio Blender:
+# medido no import do ABeautifulGame, max 6e-4 em malhas sem edicao.
+LIMIAR_NORMAL = 1e-3
+
+
+def posicoes_na_ordem(me, gltf, bin_chunk, prim):
+    """
+    Para uma malha que so teve vertices movidos, gera POSITION, NORMAL e
+    TANGENT na ordem de vertices da base (que e a ordem do Blender desde o
+    import). NORMAL e TANGENT so mudam nos vertices movidos ou cuja normal
+    mudou de fato; nos demais ficam os bytes da base. Assim a bufferView
+    muda apenas nos blocos dos vertices editados.
+    Devolve {atributo: array float32} ou None se nao for aplicavel.
+    """
+    attrs = prim["attributes"]
+    n = len(me.vertices)
+    base_pos = ler_accessor(gltf, bin_chunk, attrs["POSITION"])
+    if len(base_pos) != n:
+        return None
+    co = np.empty(n * 3, dtype=np.float32)
+    me.vertices.foreach_get("co", co)
+    pos = zup_para_yup(co.reshape(n, 3))
+    mudou = np.any(pos != base_pos, axis=1)
+    novos = {"POSITION": pos}
+
+    if "NORMAL" in attrs:
+        base_nor = ler_accessor(gltf, bin_chunk, attrs["NORMAL"])
+        nor = zup_para_yup(por_canto(me, me.corner_normals, "vector", 3))
+        nor /= np.maximum(np.linalg.norm(nor, axis=1, keepdims=True), 1e-12)
+        mudou |= np.abs(nor - base_nor).max(axis=1) > LIMIAR_NORMAL
+        base_nor[mudou] = nor[mudou]
+        novos["NORMAL"] = base_nor
+
+    if "TANGENT" in attrs:
+        try:
+            me.calc_tangents(uvmap=me.uv_layers[0].name)
+        except (RuntimeError, IndexError):
+            return None
+        base_tan = ler_accessor(gltf, bin_chunk, attrs["TANGENT"])
+        base_tan[mudou, :3] = zup_para_yup(por_canto(me, me.loops, "tangent", 3))[mudou]
+        base_tan[mudou, 3] = por_canto(me, me.loops, "bitangent_sign", 1)[mudou]
+        me.free_tangents()
+        novos["TANGENT"] = base_tan
+
+    return novos
 
 
 def importar_marcado(context, glb_path):
@@ -179,15 +267,17 @@ def importar_marcado(context, glb_path):
 
     for me in bpy.data.meshes:
         if "gitbin_mesh" in me:
-            me["gitbin_fp"] = impressao_digital(me)
+            marcar(me, me["gitbin_mesh"], True)
     context.scene.gitbin_props.base_sha = sha256_arquivo(glb_path)
 
 
 def gerar_glb(context, glb_path, destino):
     """
     Exporta a cena e mescla com a versao base: malhas inalteradas desde o
-    import (ou desde o ultimo save) voltam com os bytes originais.
-    Retorna (sucesso, mensagem, meshes_gltf_exportadas).
+    import (ou desde o ultimo save) voltam com os bytes originais, e malhas
+    que so tiveram vertices movidos trocam apenas POSITION/NORMAL/TANGENT,
+    na ordem original dos vertices.
+    Retorna (sucesso, mensagem, meshes_gltf_exportadas, indices_em_ordem).
     """
     props = context.scene.gitbin_props
     base_ok = (os.path.isfile(glb_path)
@@ -204,13 +294,29 @@ def gerar_glb(context, glb_path, destino):
         meshes = ler_glb(novo)[0].get("meshes", [])
 
         preservar = {}
-        if base_ok:
-            for j, m in enumerate(meshes):
-                src = m.get("extras", {}).get("gitbin_mesh")
-                me = bpy.data.meshes.get(m.get("name", ""))
-                if src is not None and me is not None \
-                        and me.get("gitbin_fp") == impressao_digital(me):
-                    preservar[j] = src
+        base = None
+        for j, m in enumerate(meshes if base_ok else []):
+            src = m.get("extras", {}).get("gitbin_mesh")
+            me = bpy.data.meshes.get(m.get("name", ""))
+            if src is None or me is None:
+                continue
+            if me.get("gitbin_fp") == impressao_digital(me):
+                preservar[j] = src
+            elif me.get("gitbin_ordem") \
+                    and me.get("gitbin_fp_topo") == impressao_digital(me, sem_posicao=True):
+                if base is None:
+                    gltf_base, resto = ler_glb(glb_path)
+                    base = (gltf_base, resto[8:])
+                prims = base[0]["meshes"][src]["primitives"]
+                novos = posicoes_na_ordem(me, base[0], base[1], prims[0]) if len(prims) == 1 else None
+                if novos is None:
+                    continue
+                subst = {}
+                for nome, valores in novos.items():
+                    arq = os.path.join(tmp, f"m{j}_{nome}.bin")
+                    valores.astype(np.float32).tofile(arq)
+                    subst[nome] = arq
+                preservar[j] = {"base": src, "substituir": subst}
 
         mapa = os.path.join(tmp, "preservar.json")
         with open(mapa, "w") as f:
@@ -224,7 +330,7 @@ def gerar_glb(context, glb_path, destino):
         sucesso, output = rodar_gitbin(["mesclar", novo, glb_path, mapa, destino])
 
     aviso = "" if base_ok else "Cena sem base do gitbin: geometria exportada do zero.\n"
-    return sucesso, aviso + output, meshes
+    return sucesso, aviso + output, meshes, set(preservar)
 
 
 class GITBIN_OT_save(bpy.types.Operator):
@@ -247,7 +353,7 @@ class GITBIN_OT_save(bpy.types.Operator):
 
         with tempfile.TemporaryDirectory() as tmp:
             saida = os.path.join(tmp, "saida.glb")
-            sucesso, output, meshes = gerar_glb(context, glb_path, saida)
+            sucesso, output, meshes, em_ordem = gerar_glb(context, glb_path, saida)
             if not sucesso:
                 props.ultimo_status = output
                 self.report({"ERROR"}, "Falha ao gerar o GLB.")
@@ -256,7 +362,7 @@ class GITBIN_OT_save(bpy.types.Operator):
 
         # O arquivo salvo vira a nova base: reindexa as malhas pela ordem
         # do export e atualiza as impressoes digitais.
-        marcar_malhas(meshes)
+        marcar_malhas(meshes, em_ordem)
         props.base_sha = sha256_arquivo(glb_path)
 
         sucesso, saida_save = rodar_gitbin(["save"], cwd=pasta)
@@ -286,7 +392,7 @@ class GITBIN_OT_status(bpy.types.Operator):
 
         with tempfile.TemporaryDirectory() as tmp:
             gerado = os.path.join(tmp, "gerado.glb")
-            sucesso, output, _ = gerar_glb(context, glb_path, gerado)
+            sucesso, output, _, _ = gerar_glb(context, glb_path, gerado)
             if not sucesso:
                 props.ultimo_status = output
                 return {"CANCELLED"}
