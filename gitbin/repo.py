@@ -125,6 +125,31 @@ def copiar_reflink(src, dest):
             f.write(dados)
 
 
+BLOCO = 4096  # tamanho do setor do Btrfs
+
+
+def gravar_blocos(path, dados):
+    """
+    Atualiza um arquivo reescrevendo so os blocos de 4 KiB que mudaram.
+
+    O arquivo no subvolume ativo compartilha os extents com o snapshot da
+    versao anterior; um bloco que nao e reescrito continua compartilhado, e o
+    CoW do Btrfs aloca espaco novo apenas para os blocos gravados.
+    Retorna quantos bytes foram de fato gravados.
+    """
+    gravados = 0
+    with open(path, "r+b") as f:
+        antigo = f.read()
+        for ini in range(0, len(dados), BLOCO):
+            bloco = dados[ini:ini + BLOCO]
+            if antigo[ini:ini + BLOCO] != bloco:
+                f.seek(ini)
+                f.write(bloco)
+                gravados += len(bloco)
+        f.truncate(len(dados))
+    return gravados
+
+
 def _rodar(cmd):
     """roda um comando e devolve o stdout, ou "" se ele falhar."""
     resultado = subprocess.run(cmd, capture_output=True, text=True)

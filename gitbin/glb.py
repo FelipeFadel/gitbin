@@ -227,10 +227,23 @@ def mesclar(base, novo, preservar):
     accs = j.setdefault("accessors", [])
     mapa_bv, mapa_acc = {}, {}
 
+    # origem[b] = indice na base que a bufferView b de saida "ocupa". Serve para
+    # manter a ordem da base: o que nao mudou continua no mesmo indice, e o
+    # save encontra a versao anterior de cada bufferView pelo indice.
+    por_hash_base = {}
+    for bi, dados in seg_base.items():
+        por_hash_base.setdefault(hashlib.sha256(dados).digest(), bi)
+    origem = {}
+    for b, (_, dados) in enumerate(bvs):
+        bi = por_hash_base.get(hashlib.sha256(dados).digest())
+        if bi is not None:
+            origem[b] = bi
+
     def trazer_bv(bi):
         if bi not in mapa_bv:
             bvs.append((dict(bj["bufferViews"][bi]), seg_base[bi]))
             mapa_bv[bi] = len(bvs) - 1
+            origem[mapa_bv[bi]] = bi
         return mapa_bv[bi]
 
     def trazer_acc(ai):
@@ -271,7 +284,7 @@ def mesclar(base, novo, preservar):
             usados_bv |= {a["sparse"]["indices"]["bufferView"], a["sparse"]["values"]["bufferView"]}
     usados_bv |= {img["bufferView"] for img in j.get("images", []) if "bufferView" in img}
     usados_bv.discard(None)
-    usados_bv = sorted(usados_bv)
+    usados_bv = sorted(usados_bv, key=lambda b: (0, origem[b], b) if b in origem else (1, b, b))
     campo_bv  = {b: k for k, b in enumerate(usados_bv)}
     _remapear(j, campo_acc, campo_bv)
 

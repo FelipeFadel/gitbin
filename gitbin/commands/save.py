@@ -66,10 +66,14 @@ def cmd_save():
         if hashes[idx_str] in gravados_nesta:
             repo.copiar_reflink(gravados_nesta[hashes[idx_str]], path)
             continue
-        with open(path, "wb") as f:
-            f.write(segmentos[idx])
+        if idx_str in modificados and os.path.isfile(path):
+            # Versao anterior no mesmo indice: so os blocos diferentes
+            bytes_gravados += repo.gravar_blocos(path, segmentos[idx])
+        else:
+            with open(path, "wb") as f:
+                f.write(segmentos[idx])
+            bytes_gravados += len(segmentos[idx])
         gravados_nesta[hashes[idx_str]] = path
-        bytes_gravados += len(segmentos[idx])
 
     # Conteudo que ja existia em outro indice: clona do snapshot da versao
     # base. O snapshot e somente leitura, entao a ordem das copias nao importa,
