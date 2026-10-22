@@ -234,9 +234,14 @@ def posicoes_na_ordem(me, gltf, bin_chunk, prim):
     if "NORMAL" in attrs:
         base_nor = ler_accessor(gltf, bin_chunk, attrs["NORMAL"])
         nor = zup_para_yup(por_canto(me, me.corner_normals, "vector", 3))
-        nor /= np.maximum(np.linalg.norm(nor, axis=1, keepdims=True), 1e-12)
-        mudou |= np.abs(nor - base_nor).max(axis=1) > LIMIAR_NORMAL
-        base_nor[mudou] = nor[mudou]
+        comprimento = np.linalg.norm(nor, axis=1, keepdims=True)
+        nor /= np.maximum(comprimento, 1e-12)
+        # Em faces degeneradas (area zero) o Blender devolve normal zero, que
+        # nao e valida no glTF: nesses vertices fica a normal da base.
+        valida = comprimento[:, 0] > 1e-6
+        mudou |= valida & (np.abs(nor - base_nor).max(axis=1) > LIMIAR_NORMAL)
+        trocar = mudou & valida
+        base_nor[trocar] = nor[trocar]
         novos["NORMAL"] = base_nor
 
     if "TANGENT" in attrs:
